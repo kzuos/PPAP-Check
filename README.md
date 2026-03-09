@@ -24,6 +24,8 @@ PPAPcheck is an evidence-based submission validation platform for PPAP, FAI, and
   - `recommended_actions`
   - `expert_report`
 - A reviewer dashboard that shows inventory, missing documents, severity-coded findings, traceability checks, the expert report, and the raw JSON report.
+- Upload parsing for `PDF`, `TXT`, `CSV`, `TSV`, and `XLSX`, including VDA/PPA-style bundled PDF splitting and table extraction for dimensional and material pages.
+- An optional OCR fallback for text-poor PDF pages when `OPENAI_API_KEY` and `PPAPCHECK_OCR_MODEL` are configured.
 - Sample evidence sets that exercise `BLOCK_SUBMISSION`, `PASS_WITH_OBSERVATIONS`, and `CONDITIONAL`.
 
 ## Architecture
@@ -45,7 +47,8 @@ The current implementation is framework-light but production-oriented. The valid
 
 ### Current limits
 
-- This slice validates normalized extracted data, not raw PDFs or OCR directly.
+- Scanned or image-only PDFs still need OCR to be configured, and drawing vision extraction is not yet complete.
+- Technical drawing interpretation is still limited; the current release does not yet do full balloon/GD&T visual reasoning from arbitrary drawings.
 - No database is wired yet; sample submissions are in-memory fixtures.
 - Customer-specific rules are supported as context inputs, but there is not yet a persistent customer-rule repository or template authoring UI.
 
@@ -77,6 +80,13 @@ python -m pip install -e .[dev]
 python -m uvicorn ppapcheck.main:app --reload
 ```
 
+Optional OCR configuration for scanned PDFs:
+
+```bash
+set OPENAI_API_KEY=your_key_here
+set PPAPCHECK_OCR_MODEL=your_openai_vision_model
+```
+
 3. Open the dashboard:
 
 `http://127.0.0.1:8000/`
@@ -88,7 +98,7 @@ python -m uvicorn ppapcheck.main:app --reload
 - `GET /api/samples/{sample_id}`
 - `GET /api/samples/{sample_id}/audit-log`
 - `GET /api/samples/{sample_id}/expert-report`
-- `POST /api/validate`
+- `POST /api/validate-upload`
 
 ## Next production steps
 
@@ -97,4 +107,3 @@ python -m uvicorn ppapcheck.main:app --reload
 - Add customer-template management and rule packs.
 - Add background processing, review assignment, and reviewer comments.
 - Add authentication, audit retention, and tenant isolation.
-

@@ -18,6 +18,7 @@ class TechnicalQualityValidator:
 
         findings.extend(self._check_capability_coverage(package, mode))
         findings.extend(self._check_msa_presence(package, mode))
+        findings.extend(self._check_out_of_tolerance_results(package))
         findings.extend(self._check_measurement_context(package))
         findings.extend(self._check_pfmea_to_control_plan(package))
 
@@ -96,10 +97,16 @@ class TechnicalQualityValidator:
         findings: list[ValidationFinding] = []
         missing_units: list[str] = []
         evidence = []
+        characteristics_by_document: dict[str, set[str]] = {
+            document.file_name: {characteristic.characteristic_id for characteristic in document.drawing_characteristics}
+            for document in package.documents
+        }
         for document in package.documents:
             if document.document_type not in {DocumentType.DIMENSIONAL_RESULTS, DocumentType.FAIR}:
                 continue
             for result in document.inspection_results:
+                if result.characteristic_id and result.characteristic_id in characteristics_by_document.get(document.file_name, set()):
+                    continue
                 if result.measured_value and not result.unit:
                     identifier = result.balloon_number or result.characteristic_id or document.file_name
                     missing_units.append(identifier)
@@ -121,6 +128,40 @@ class TechnicalQualityValidator:
                 )
             )
         return findings
+
+    def _check_out_of_tolerance_results(self, package: SubmissionPackage) -> list[ValidationFinding]:
+        failed_results = [
+            result
+            for document in package.documents
+            if document.document_type in {DocumentType.DIMENSIONAL_RESULTS, DocumentType.FAIR}
+            for result in document.inspection_results
+            if result.result.value == "fail"
+        ]
+        if not failed_results:
+            return []
+
+        identifiers = [
+            result.balloon_number or result.characteristic_id or result.source_document
+            for result in failed_results[:12]
+        ]
+        evidence = [result.evidence[0] for result in failed_results if result.evidence][:6]
+        return [
+            ValidationFinding(
+                finding_id="tech-out-of-tolerance-results",
+                category="technical_quality",
+                severity=Severity.CRITICAL,
+                title="Measured results exceed extracted tolerance limits",
+                description=(
+                    "One or more measured characteristics appear out of tolerance based on the extracted report specification. "
+                    f"Affected characteristics: {', '.join(identifiers)}."
+                ),
+                blocking=True,
+                evidence=evidence,
+                related_documents=[DocumentType.DIMENSIONAL_RESULTS, DocumentType.FAIR],
+                related_characteristics=identifiers,
+                suggested_action="Review the listed dimensional results against the released drawing and correct any nonconforming measurements or dispositions before submission.",
+            )
+        ]
 
     def _check_pfmea_to_control_plan(self, package: SubmissionPackage) -> list[ValidationFinding]:
         pfmea_entries = [
@@ -170,4 +211,3 @@ class TechnicalQualityValidator:
                 suggested_action="Update the Control Plan so each high-risk PFMEA row is linked to a control method and reaction plan.",
             )
         ]
-

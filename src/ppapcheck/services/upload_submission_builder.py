@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
+import pdfplumber
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
@@ -31,6 +32,7 @@ from ppapcheck.models import (
     SubmissionMode,
     SubmissionPackage,
 )
+from ppapcheck.services.document_ocr_service import DocumentOcrService
 
 
 @dataclass
@@ -224,6 +226,9 @@ HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
 
 
 class UploadSubmissionBuilder:
+    def __init__(self) -> None:
+        self.ocr_service = DocumentOcrService()
+
     def build(
         self,
         files: list[tuple[str, bytes]],
@@ -251,7 +256,11 @@ class UploadSubmissionBuilder:
         suffix = Path(file_name).suffix.lower()
         warnings: list[str] = []
         try:
-            fragments, tables = self._extract_content(file_name, payload, suffix)
+            if suffix == ".pdf":
+                fragments, tables, pdf_warnings = self._extract_pdf_content(file_name, payload)
+                warnings.extend(pdf_warnings)
+            else:
+                fragments, tables = self._extract_content(file_name, payload, suffix)
         except Exception as exc:
             warning = f"{file_name}: parser failed ({exc}). Manual review is required."
             return ParsedUploadDocument(
@@ -270,7 +279,7 @@ class UploadSubmissionBuilder:
         joined_text = "\n".join(fragment.text for fragment in fragments if fragment.text).strip()
 
         if suffix == ".pdf":
-            pdf_documents, pdf_warnings = self._parse_pdf_bundle(file_name, fragments)
+            pdf_documents, pdf_warnings = self._parse_pdf_bundle(file_name, fragments, tables)
             warnings.extend(pdf_warnings)
             if pdf_documents:
                 return ParsedUploadDocument(documents=pdf_documents, warnings=warnings)
@@ -340,6 +349,76 @@ class UploadSubmissionBuilder:
             return [TextFragment(text=pretty, section_name="json")], []
         return [TextFragment(text="", section_name="unsupported")], []
 
+    def _extract_pdf_content(
+        self,
+        file_name: str,
+        payload: bytes,
+    ) -> tuple[list[TextFragment], list[TableSection], list[str]]:
+        fragments = self._extract_pdf(payload)
+        tables: list[TableSection] = []
+        warnings: list[str] = []
+
+        try:
+            with pdfplumber.open(io.BytesIO(payload)) as pdf:
+                plumber_fragments_by_page: dict[int, str] = {}
+                for index, page in enumerate(pdf.pages, start=1):
+                    page_text = page.extract_text() or ""
+                    if page_text.strip():
+                        plumber_fragments_by_page[index] = page_text
+                    for table_index, table in enumerate(page.extract_tables(), start=1):
+                        cleaned_rows = [
+                            [self._clean_cell(cell) for cell in row]
+                            for row in table
+                            if row and any(self._clean_cell(cell) for cell in row)
+                        ]
+                        if not cleaned_rows:
+                            continue
+                        tables.append(
+                            TableSection(
+                                section_name=f"pdf_page_{index}_table_{table_index}",
+                                rows=cleaned_rows,
+                            )
+                        )
+
+                merged_fragments: list[TextFragment] = []
+                for fragment in fragments:
+                    page_number = fragment.page_number or 0
+                    plumber_text = plumber_fragments_by_page.get(page_number, "")
+                    merged_text = fragment.text
+                    if len(plumber_text.strip()) > len((fragment.text or "").strip()):
+                        merged_text = plumber_text
+                    merged_fragments.append(
+                        TextFragment(
+                            text=merged_text,
+                            page_number=fragment.page_number,
+                            section_name=fragment.section_name,
+                        )
+                    )
+                fragments = merged_fragments
+        except Exception as exc:
+            warnings.append(f"{file_name}: pdfplumber table extraction failed ({exc}).")
+
+        low_text_pages = [
+            fragment.page_number
+            for fragment in fragments
+            if fragment.page_number is not None and len(re.sub(r"\s+", "", fragment.text or "")) < 40
+        ]
+        if low_text_pages:
+            ocr_result = self.ocr_service.extract_pdf_pages(payload, low_text_pages[:10])
+            warnings.extend(f"{file_name}: {warning}" for warning in ocr_result.warnings)
+            ocr_text_by_page = {page.page_number: page.text for page in ocr_result.pages if page.text.strip()}
+            if ocr_text_by_page:
+                fragments = [
+                    TextFragment(
+                        text=ocr_text_by_page.get(fragment.page_number, fragment.text),
+                        page_number=fragment.page_number,
+                        section_name=fragment.section_name,
+                    )
+                    for fragment in fragments
+                ]
+
+        return fragments, tables, warnings
+
     def _extract_pdf(self, payload: bytes) -> list[TextFragment]:
         reader = PdfReader(io.BytesIO(payload))
         fragments: list[TextFragment] = []
@@ -352,8 +431,9 @@ class UploadSubmissionBuilder:
         self,
         file_name: str,
         fragments: list[TextFragment],
+        tables: list[TableSection],
     ) -> tuple[list[DocumentRecord], list[str]]:
-        sections = self._build_pdf_sections(file_name, fragments)
+        sections = self._build_pdf_sections(file_name, fragments, tables)
         if len(sections) <= 1:
             return [], []
 
@@ -366,6 +446,8 @@ class UploadSubmissionBuilder:
             section_metadata = self._extract_metadata(file_name, section.fragments)
             section_metadata = self._merge_shared_metadata(section_metadata, shared_metadata)
             section_metadata = self._merge_filename_inference(file_name, section_metadata)
+            section_tables = self._tables_for_page_span(tables, section.start_page, section.end_page)
+            structured = self._extract_structured_rows(file_name, section.document_type, section_tables)
             notes = [
                 f"Virtual document extracted from bundled PDF pages {self._page_span_text(section.start_page, section.end_page)}.",
                 f"Detected section: {section.section_label}.",
@@ -381,6 +463,12 @@ class UploadSubmissionBuilder:
                     document_type=section.document_type,
                     classification_confidence=section.classification_confidence,
                     metadata=section_metadata,
+                    drawing_characteristics=structured["drawing_characteristics"],
+                    inspection_results=structured["inspection_results"],
+                    process_flow_steps=structured["process_flow_steps"],
+                    pfmea_entries=structured["pfmea_entries"],
+                    control_plan_entries=structured["control_plan_entries"],
+                    certificates=structured["certificates"],
                     notes=notes,
                 )
             )
@@ -391,6 +479,7 @@ class UploadSubmissionBuilder:
         self,
         file_name: str,
         fragments: list[TextFragment],
+        tables: list[TableSection],
     ) -> list[PdfSection]:
         sections: list[PdfSection] = []
         mergeable_types = {
@@ -405,6 +494,15 @@ class UploadSubmissionBuilder:
             page_number = fragment.page_number or 0
             text = fragment.text.strip()
             document_type, confidence, section_label = self._classify_pdf_page(file_name, fragment)
+            table_type, table_confidence, table_label = self._classify_pdf_tables(page_number, tables)
+            if table_type != DocumentType.UNKNOWN and (
+                document_type == DocumentType.UNKNOWN
+                or document_type in {DocumentType.DESIGN_RECORD, DocumentType.MATERIAL_CERTIFICATE}
+                or table_confidence > confidence
+            ):
+                document_type = table_type
+                confidence = table_confidence
+                section_label = table_label
 
             if not text:
                 if sections:
@@ -464,7 +562,7 @@ class UploadSubmissionBuilder:
         if "productionprocess-related and general deliverables" in compact:
             return DocumentType.OEM_SPECIFIC, 0.86, "PPA deliverables index"
         if "product-related deliverables" in compact:
-            if "chemical composition" in compact or "hardness:" in compact:
+            if any(token in compact for token in ("chemical composition", "hardness:", "supplier batch no", "ts en ", "en ac ")):
                 return DocumentType.MATERIAL_RESULTS, 0.95, "Material check report"
             if "actual values of organization" in compact and "requirements / specification" in compact:
                 return DocumentType.DIMENSIONAL_RESULTS, 0.95, "Dimensional report"
@@ -481,6 +579,24 @@ class UploadSubmissionBuilder:
 
         document_type, confidence = self._classify_document(file_name, fragment.text)
         return document_type, confidence, document_type.value.replace("_", " ").title()
+
+    def _classify_pdf_tables(
+        self,
+        page_number: int,
+        tables: list[TableSection],
+    ) -> tuple[DocumentType, float, str]:
+        page_tables = [
+            table
+            for table in tables
+            if self._page_number_from_section_name(table.section_name) == page_number
+        ]
+        for table in page_tables:
+            if self._is_vda_material_section(table):
+                return DocumentType.MATERIAL_RESULTS, 0.96, "Material check report"
+        for table in page_tables:
+            if self._is_vda_dimensional_section(table):
+                return DocumentType.DIMENSIONAL_RESULTS, 0.96, "Dimensional report"
+        return DocumentType.UNKNOWN, 0.0, "table classification unavailable"
 
     def _extract_workbook(self, payload: bytes) -> tuple[list[TextFragment], list[TableSection]]:
         workbook = load_workbook(io.BytesIO(payload), data_only=True, read_only=True)
@@ -647,6 +763,237 @@ class UploadSubmissionBuilder:
             "certificates": self._parse_certificates(file_name, document_type, sections),
         }
 
+    def _is_vda_dimensional_section(self, section: TableSection) -> bool:
+        if self._is_vda_material_section(section):
+            return False
+        flattened = " ".join(
+            self._clean_cell(cell).lower()
+            for row in section.rows[:30]
+            for cell in row
+            if self._clean_cell(cell)
+        )
+        return (
+            "requirements / specification" in flattened
+            and "actual values of organization" in flattened
+            and "no." in flattened
+        )
+
+    def _is_vda_material_section(self, section: TableSection) -> bool:
+        flattened = " ".join(
+            self._clean_cell(cell).lower()
+            for row in section.rows[:35]
+            for cell in row
+            if self._clean_cell(cell)
+        )
+        if "supplier batch no" not in flattened:
+            return False
+        return any(
+            token in flattened
+            for token in ("chemical composition", "hardness:", "ts en ", "en ac ", "bronze")
+        )
+
+    def _vda_characteristic_rows(
+        self,
+        section: TableSection,
+    ) -> tuple[list[tuple[list[str], str, list[tuple[str, str]]]], int | None]:
+        if not self._is_vda_dimensional_section(section):
+            return [], None
+
+        header_row = None
+        for index, row in enumerate(section.rows[:30]):
+            row_text = " ".join(self._clean_cell(cell).lower() for cell in row if self._clean_cell(cell))
+            if "requirements / specification" in row_text and "actual values of organization" in row_text:
+                header_row = index
+                break
+        if header_row is None:
+            return [], None
+
+        cavity_row = section.rows[header_row + 1] if header_row + 1 < len(section.rows) else []
+        measured_columns = [
+            (idx, self._clean_cell(value))
+            for idx, value in enumerate(cavity_row)
+            if idx > 3 and self._clean_cell(value)
+        ]
+        if not measured_columns:
+            measured_columns = [(6, "sample_1"), (10, "sample_2")]
+
+        parsed_rows: list[tuple[list[str], str, list[tuple[str, str]]]] = []
+        for row in section.rows[header_row + 1 :]:
+            characteristic_id = self._clean_cell(row[0]) if row else ""
+            requirement = self._clean_cell(row[3]) if len(row) > 3 else ""
+            if not re.fullmatch(r"\d{2,4}", characteristic_id):
+                continue
+            if not requirement:
+                continue
+            measured_pairs: list[tuple[str, str]] = []
+            for column_index, sample_label in measured_columns:
+                if column_index >= len(row):
+                    continue
+                raw_value = self._clean_cell(row[column_index])
+                if not raw_value:
+                    continue
+                for token_index, token in enumerate(self._split_measurement_values(raw_value), start=1):
+                    label = sample_label or f"sample_{column_index}"
+                    if len(self._split_measurement_values(raw_value)) > 1:
+                        label = f"{label}_{token_index}"
+                    measured_pairs.append((label, token))
+            if measured_pairs:
+                parsed_rows.append((row, requirement, measured_pairs))
+
+        return parsed_rows, header_row
+
+    def _split_measurement_values(self, raw_value: str) -> list[str]:
+        normalized = self._clean_cell(raw_value).replace("\n", " ").strip()
+        if not normalized:
+            return []
+        if "x" in normalized.lower():
+            return [normalized]
+        tokens = [token for token in re.split(r"\s+", normalized) if token]
+        if len(tokens) > 1 and all(
+            self._parse_numeric_value(token) is not None or token.upper() in {"OK", "GAUGE", "X"}
+            for token in tokens
+        ):
+            return tokens
+        return [normalized]
+
+    def _derive_spec_fields(self, requirement: str) -> tuple[str | None, str | None, str | None]:
+        normalized = self._normalize_spec_text(requirement).replace(",", ".")
+        unit = self._guess_unit_from_spec(requirement)
+
+        if any(keyword in normalized.lower() for keyword in ("radial run-out", "flatness", "position", "rz", "pt")):
+            limit = self._extract_first_numeric(normalized)
+            return None, f"<= {limit}" if limit is not None else None, unit
+
+        nominal = self._extract_first_numeric(normalized)
+        if nominal is None:
+            return None, None, unit
+        if "°" in normalized and any(token in normalized for token in ('"', "'", "′", "″")):
+            return str(nominal), None, unit
+
+        two_sided = re.search(
+            r"\(([+-]?\d+(?:\.\d+)?)\s*/\s*([+-]?\d+(?:\.\d+)?)\)",
+            normalized,
+        )
+        if two_sided:
+            first = float(two_sided.group(1))
+            second = float(two_sided.group(2))
+            lower = min(first, second)
+            upper = max(first, second)
+            return str(nominal), f"{lower:+g}/{upper:+g}", unit
+
+        plus_minus = re.search(r"±\s*(\d+(?:\.\d+)?)", normalized)
+        if plus_minus:
+            tol = float(plus_minus.group(1))
+            return str(nominal), f"±{tol:g}", unit
+
+        asym = re.search(
+            r"\+(\d+(?:\.\d+)?)\s*/\s*-(\d+(?:\.\d+)?)",
+            normalized,
+        )
+        if asym:
+            return str(nominal), f"-{float(asym.group(2)):g}/+{float(asym.group(1)):g}", unit
+
+        one_sided_plus = re.search(r"\+(\d+(?:\.\d+)?)", normalized)
+        one_sided_minus = re.search(r"-(\d+(?:\.\d+)?)", normalized)
+        if one_sided_plus and not one_sided_minus:
+            return str(nominal), f"+0/+{float(one_sided_plus.group(1)):g}", unit
+        if one_sided_minus and not one_sided_plus:
+            return str(nominal), f"-{float(one_sided_minus.group(1)):g}/+0", unit
+
+        return str(nominal), None, unit
+
+    def _guess_unit_from_spec(self, requirement: str) -> str | None:
+        normalized = self._normalize_spec_text(requirement)
+        lowered = normalized.lower()
+        if "°" in normalized:
+            return "deg"
+        if lowered.startswith("rz") or lowered.startswith("pt"):
+            return "um"
+        if any(token in lowered for token in ("radial run-out", "flatness", "position", "ø", "r")) or self._extract_first_numeric(normalized) is not None:
+            return "mm"
+        return None
+
+    def _extract_first_numeric(self, text: str) -> float | None:
+        match = re.search(r"[+-]?\d+(?:\.\d+)?", text)
+        if not match:
+            return None
+        return float(match.group(0))
+
+    def _parse_numeric_value(self, text: str) -> float | None:
+        normalized = text.replace(",", ".")
+        if "x" in normalized.lower():
+            return None
+        match = re.search(r"[+-]?\d+(?:\.\d+)?", normalized)
+        if not match:
+            return None
+        return float(match.group(0))
+
+    def _evaluate_vda_measurement(
+        self,
+        requirement: str,
+        measured_value: str,
+    ) -> MeasurementStatus:
+        explicit = self._measurement_status(measured_value)
+        if explicit != MeasurementStatus.UNCLEAR:
+            return explicit
+        if measured_value.strip().upper() in {"GAUGE", "X"}:
+            return MeasurementStatus.UNCLEAR
+
+        measured = self._parse_numeric_value(measured_value)
+        if measured is None:
+            return MeasurementStatus.UNCLEAR
+
+        normalized = self._normalize_spec_text(requirement).replace(",", ".")
+        lowered = normalized.lower()
+        if "°" in normalized and any(token in normalized for token in ('"', "'", "′", "″")):
+            return MeasurementStatus.UNCLEAR
+        if any(keyword in lowered for keyword in ("radial run-out", "flatness", "position", "rz", "pt")):
+            limit = self._extract_first_numeric(normalized)
+            if limit is None:
+                return MeasurementStatus.UNCLEAR
+            return MeasurementStatus.PASS if measured <= limit + 1e-6 else MeasurementStatus.FAIL
+
+        if "acc. to" in lowered or "pk " in lowered:
+            return MeasurementStatus.UNCLEAR
+
+        nominal = self._extract_first_numeric(normalized)
+        if nominal is None:
+            return MeasurementStatus.UNCLEAR
+
+        lower_dev = upper_dev = None
+        two_sided = re.search(r"\(([+-]?\d+(?:\.\d+)?)\s*/\s*([+-]?\d+(?:\.\d+)?)\)", normalized)
+        if two_sided:
+            first = float(two_sided.group(1))
+            second = float(two_sided.group(2))
+            lower_dev = min(first, second)
+            upper_dev = max(first, second)
+        else:
+            plus_minus = re.search(r"±\s*(\d+(?:\.\d+)?)", normalized)
+            asym = re.search(r"\+(\d+(?:\.\d+)?)\s*/\s*-(\d+(?:\.\d+)?)", normalized)
+            if plus_minus:
+                tol = float(plus_minus.group(1))
+                lower_dev = -tol
+                upper_dev = tol
+            elif asym:
+                upper_dev = float(asym.group(1))
+                lower_dev = -float(asym.group(2))
+            else:
+                one_sided_plus = re.search(r"\+(\d+(?:\.\d+)?)", normalized)
+                one_sided_minus = re.search(r"-(\d+(?:\.\d+)?)", normalized)
+                if one_sided_plus and not one_sided_minus:
+                    lower_dev = 0.0
+                    upper_dev = float(one_sided_plus.group(1))
+                elif one_sided_minus and not one_sided_plus:
+                    lower_dev = -float(one_sided_minus.group(1))
+                    upper_dev = 0.0
+
+        if lower_dev is None or upper_dev is None:
+            return MeasurementStatus.UNCLEAR
+
+        lower_limit = nominal + lower_dev
+        upper_limit = nominal + upper_dev
+        return MeasurementStatus.PASS if lower_limit - 1e-6 <= measured <= upper_limit + 1e-6 else MeasurementStatus.FAIL
+
     def _parse_drawing_characteristics(
         self,
         file_name: str,
@@ -661,6 +1008,30 @@ class UploadSubmissionBuilder:
         }:
             return []
         characteristics: list[DrawingCharacteristic] = []
+        if document_type == DocumentType.DIMENSIONAL_RESULTS:
+            for section in sections:
+                parsed_rows, _ = self._vda_characteristic_rows(section)
+                for row, requirement, _ in parsed_rows:
+                    characteristic_id = self._clean_cell(row[0])
+                    nominal, tolerance, unit = self._derive_spec_fields(requirement)
+                    characteristic_type = CharacteristicType.SPECIAL if any(
+                        token in requirement.lower() for token in SPECIAL_TOKENS
+                    ) else CharacteristicType.STANDARD
+                    characteristics.append(
+                        DrawingCharacteristic(
+                            characteristic_id=characteristic_id,
+                            balloon_number=characteristic_id,
+                            description=requirement,
+                            nominal=nominal,
+                            tolerance=tolerance,
+                            unit=unit,
+                            characteristic_type=characteristic_type,
+                            source_document=file_name,
+                            evidence=[
+                                self._row_evidence(file_name, section.section_name, "characteristic", row, 0.9)
+                            ],
+                        )
+                    )
         for section in sections:
             header_row, mapping = self._find_header(section.rows, {"description", "nominal", "tolerance"})
             if header_row is None or not (mapping.get("characteristic_id") or mapping.get("balloon_number")):
@@ -702,6 +1073,32 @@ class UploadSubmissionBuilder:
         if document_type not in {DocumentType.DIMENSIONAL_RESULTS, DocumentType.FAIR}:
             return []
         results: list[InspectionResult] = []
+        if document_type == DocumentType.DIMENSIONAL_RESULTS:
+            for section in sections:
+                parsed_rows, _ = self._vda_characteristic_rows(section)
+                for row, requirement, measured_pairs in parsed_rows:
+                    characteristic_id = self._clean_cell(row[0])
+                    unit = self._guess_unit_from_spec(requirement)
+                    for sample_label, measured_value in measured_pairs:
+                        results.append(
+                            InspectionResult(
+                                characteristic_id=characteristic_id,
+                                balloon_number=characteristic_id,
+                                measured_value=measured_value,
+                                unit=unit,
+                                result=self._evaluate_vda_measurement(requirement, measured_value),
+                                source_document=file_name,
+                                evidence=[
+                                    self._row_evidence(
+                                        file_name,
+                                        f"{section.section_name}:{sample_label}",
+                                        "measurement",
+                                        row,
+                                        0.91,
+                                    )
+                                ],
+                            )
+                        )
         for section in sections:
             header_row, mapping = self._find_header(section.rows, {"measured_value"})
             if header_row is None or not (mapping.get("characteristic_id") or mapping.get("balloon_number")):
@@ -834,7 +1231,15 @@ class UploadSubmissionBuilder:
         }:
             return []
         records: list[CertificateRecord] = []
+        seen: set[tuple[str, str | None]] = set()
         for section in sections:
+            if self._is_vda_material_section(section):
+                for record in self._parse_vda_material_certificates(file_name, section):
+                    key = (record.certificate_type, record.identifier)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    records.append(record)
             header_row, mapping = self._find_header(section.rows, {"identifier"})
             if header_row is None:
                 continue
@@ -842,12 +1247,68 @@ class UploadSubmissionBuilder:
                 identifier = self._value_from_row(row, mapping, "identifier")
                 if not identifier:
                     continue
+                record = CertificateRecord(
+                    certificate_type=self._value_from_row(row, mapping, "certificate_type") or document_type.value,
+                    identifier=identifier,
+                    source_document=file_name,
+                    evidence=[self._row_evidence(file_name, section.section_name, "certificate", row, 0.8)],
+                )
+                key = (record.certificate_type, record.identifier)
+                if key in seen:
+                    continue
+                seen.add(key)
+                records.append(record)
+        return records
+
+    def _parse_vda_material_certificates(
+        self,
+        file_name: str,
+        section: TableSection,
+    ) -> list[CertificateRecord]:
+        if not self._is_vda_material_section(section):
+            return []
+
+        records: list[CertificateRecord] = []
+        header_row = None
+        for index, row in enumerate(section.rows[:30]):
+            row_text = " ".join(self._clean_cell(cell).lower() for cell in row if self._clean_cell(cell))
+            if "requirements / specification" in row_text and "actual values of organization" in row_text:
+                header_row = index
+                break
+        if header_row is None:
+            return []
+
+        for row in section.rows[header_row + 1 :]:
+            requirement = self._clean_cell(row[3]) if len(row) > 3 else ""
+            actual_value = self._clean_cell(row[6]) if len(row) > 6 else ""
+            if not requirement:
+                continue
+
+            lowered = requirement.lower()
+            if lowered == "chemical composition (%)":
+                break
+
+            if lowered.startswith("supplier batch no"):
+                if actual_value and actual_value != "-":
+                    records.append(
+                        CertificateRecord(
+                            certificate_type="supplier_batch",
+                            identifier=actual_value,
+                            related_requirement=requirement,
+                            source_document=file_name,
+                            evidence=[self._row_evidence(file_name, section.section_name, "supplier_batch", row, 0.88)],
+                        )
+                    )
+                continue
+
+            if requirement.upper().startswith(("TS EN", "EN AC", "DIN", "ISO", "ASTM")) or "bronze" in lowered:
                 records.append(
                     CertificateRecord(
-                        certificate_type=self._value_from_row(row, mapping, "certificate_type") or document_type.value,
-                        identifier=identifier,
+                        certificate_type="material_specification",
+                        identifier=requirement,
+                        related_requirement=actual_value or None,
                         source_document=file_name,
-                        evidence=[self._row_evidence(file_name, section.section_name, "certificate", row, 0.8)],
+                        evidence=[self._row_evidence(file_name, section.section_name, "material_specification", row, 0.86)],
                     )
                 )
         return records
@@ -1075,6 +1536,14 @@ class UploadSubmissionBuilder:
             return value.strftime("%Y-%m-%d")
         return str(value).strip()
 
+    def _normalize_spec_text(self, value: str) -> str:
+        return (
+            value.replace("Â±", "±")
+            .replace("Ã¸", "ø")
+            .replace("Ø", "ø")
+            .replace("Â°", "°")
+        )
+
     def _normalize_header(self, value: str) -> str:
         value = self._clean_cell(value).lower()
         return re.sub(r"[^a-z0-9]+", " ", value).strip()
@@ -1110,3 +1579,24 @@ class UploadSubmissionBuilder:
         if start_page == end_page:
             return f"p. {start_page}"
         return f"pp. {start_page}-{end_page}"
+
+    def _tables_for_page_span(
+        self,
+        tables: list[TableSection],
+        start_page: int,
+        end_page: int,
+    ) -> list[TableSection]:
+        selected: list[TableSection] = []
+        for table in tables:
+            page_number = self._page_number_from_section_name(table.section_name)
+            if page_number is None:
+                continue
+            if start_page <= page_number <= end_page:
+                selected.append(table)
+        return selected
+
+    def _page_number_from_section_name(self, section_name: str) -> int | None:
+        match = re.search(r"pdf_page_(\d+)", section_name)
+        if not match:
+            return None
+        return int(match.group(1))
