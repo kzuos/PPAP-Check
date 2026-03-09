@@ -11,3 +11,4 @@ output/
 
 .vercel
 *.egg-info/
+build/
