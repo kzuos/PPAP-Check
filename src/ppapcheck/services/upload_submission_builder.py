@@ -5,7 +5,7 @@ import io
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
@@ -48,7 +48,7 @@ class TableSection:
 
 @dataclass
 class ParsedUploadDocument:
-    document: DocumentRecord
+    documents: list[DocumentRecord]
     warnings: list[str]
 
 
@@ -58,44 +58,125 @@ class UploadBuildResult:
     warnings: list[str]
 
 
+@dataclass
+class PdfSection:
+    document_type: DocumentType
+    classification_confidence: float
+    start_page: int
+    end_page: int
+    section_label: str
+    fragments: list[TextFragment] = field(default_factory=list)
+
+
 FIELD_PATTERNS: dict[str, list[tuple[re.Pattern[str], float]]] = {
     "part_number": [
-        (re.compile(r"(?:part(?:\s+number|\s+no\.?|#)?|p/?n)\s*[:#-]\s*([A-Z0-9][A-Z0-9._/\-]{1,80})", re.IGNORECASE), 0.96),
+        (
+            re.compile(
+                r"(?:^|\n)\s*(?:part\s*number|part\s*no\.?|p/?n)\s*[:#-]?\s*"
+                r"([A-Z0-9][A-Z0-9 ._/\-]{2,80}?)(?=\s+(?:hardware version|part number|name|drawing number|diagnosis status|software version|version / date|identification|$)|$)",
+                re.IGNORECASE,
+            ),
+            0.98,
+        ),
     ],
     "drawing_number": [
-        (re.compile(r"(?:drawing(?:\s+number|\s+no\.?)?|dwg(?:\s+number|\s+no\.?)?)\s*[:#-]\s*([A-Z0-9][A-Z0-9._/\-]{1,80})", re.IGNORECASE), 0.95),
+        (
+            re.compile(
+                r"(?:^|\n)\s*(?:drawing\s*number|drawing\s*no\.?|dwg(?:\s*number|\s*no\.?)?)\s*[:#-]?\s*"
+                r"([A-Z0-9][A-Z0-9 ._/\-]{2,80}?)(?=\s+(?:software version|name|version / date|identification|$)|$)",
+                re.IGNORECASE,
+            ),
+            0.97,
+        ),
     ],
     "revision": [
-        (re.compile(r"(?:revision|rev(?:ision)?\.?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/\-]{0,12})", re.IGNORECASE), 0.92),
+        (
+            re.compile(
+                r"(?:^|\n)\s*version\s*/\s*date\s*[:#-]?\s*([A-Z0-9]{1,8})(?:\s*/\s*[0-9]{1,2}[./][0-9]{1,2}[./][0-9]{2,4})?",
+                re.IGNORECASE,
+            ),
+            0.96,
+        ),
+        (re.compile(r"(?:^|\n)\s*(?:revision|rev(?:ision)?\.?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/\-]{0,12})", re.IGNORECASE), 0.92),
     ],
     "customer_name": [
-        (re.compile(r"(?:customer|oem)\s*[:#-]\s*([^\n\r]{2,100})", re.IGNORECASE), 0.88),
+        (
+            re.compile(
+                r"(?:^|\n)\s*customer(?!-ready)(?:\s*\(recipient\))?\s*[:#-]?\s*([^\n\r]{2,100})",
+                re.IGNORECASE,
+            ),
+            0.9,
+        ),
+        (
+            re.compile(
+                r"\bcustomer(?!-ready)\s+([A-Z][A-Za-z0-9 .&()/\-]{2,80}?)(?=report version|delivery quantity|delivery location|batch number|order number|production location|sample weight|unloading point|$)",
+                re.IGNORECASE,
+            ),
+            0.86,
+        ),
     ],
     "supplier_name": [
-        (re.compile(r"(?:supplier|vendor|manufacturer)\s*[:#-]\s*([^\n\r]{2,100})", re.IGNORECASE), 0.88),
+        (
+            re.compile(r"(?:^|\n)\s*organization\s*[:#-]?\s*([A-Z][^\n\r]{2,120})", re.IGNORECASE),
+            0.92,
+        ),
+        (re.compile(r"(?:^|\n)\s*(?:supplier|vendor|manufacturer)\s*[:#-]?\s*([^\n\r]{2,100})", re.IGNORECASE), 0.88),
     ],
     "process_name": [
-        (re.compile(r"(?:process(?:\s+name)?|manufacturing\s+process)\s*[:#-]\s*([^\n\r]{2,120})", re.IGNORECASE), 0.86),
+        (re.compile(r"(?:^|\n)\s*(?:process\s*name|manufacturing\s+process)\s*[:#-]?\s*([^\n\r]{2,120})", re.IGNORECASE), 0.86),
     ],
     "material": [
-        (re.compile(r"(?:material|matl\.?|alloy)\s*[:#-]\s*([^\n\r]{2,120})", re.IGNORECASE), 0.86),
+        (re.compile(r"(?:^|\n)\s*(?:material\b|matl\.?\b|alloy\b)\s*[:#-]?\s*([^\n\r]{2,120})", re.IGNORECASE), 0.84),
     ],
     "submission_reason": [
-        (re.compile(r"(?:submission\s+reason|reason\s+for\s+submission|reason)\s*[:#-]\s*([^\n\r]{2,140})", re.IGNORECASE), 0.84),
+        (re.compile(r"(?:^|\n)\s*(?:submission\s+reason|reason\s+for\s+submission|reason\s+for\s+report\s+creation)\s*[:#-]?\s*([^\n\r]{2,140})", re.IGNORECASE), 0.86),
     ],
     "approval_status": [
-        (re.compile(r"(?:approval\s+status|warrant\s+status|status)\s*[:#-]\s*([^\n\r]{2,80})", re.IGNORECASE), 0.82),
+        (re.compile(r"(?:^|\n)\s*(?:approval\s+status|warrant\s+status)\s*[:#-]?\s*([^\n\r]{2,80})", re.IGNORECASE), 0.82),
     ],
     "signatory": [
-        (re.compile(r"(?:signed\s+by|approved\s+by|signatory|prepared\s+by)\s*[:#-]\s*([^\n\r]{2,100})", re.IGNORECASE), 0.82),
+        (re.compile(r"(?:^|\n)\s*(?:signed\s+by|approved\s+by|signatory|prepared\s+by|name)\s*[:#-]?\s*([^\n\r]{2,100})", re.IGNORECASE), 0.8),
     ],
     "date": [
-        (re.compile(r"(?:date|submission\s+date|inspection\s+date)\s*[:#-]\s*([0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}|[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", re.IGNORECASE), 0.8),
+        (re.compile(r"(?:^|\n)\s*(?:date|submission\s+date|inspection\s+date)\s*[:#-]?\s*([0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}|[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", re.IGNORECASE), 0.8),
     ],
     "ppap_level": [
         (re.compile(r"ppap\s+level\s*[:#-]?\s*([1-5])", re.IGNORECASE), 0.9),
     ],
 }
+
+MONTH_TOKENS = (
+    "ocak",
+    "subat",
+    "şubat",
+    "mart",
+    "nisan",
+    "mayis",
+    "mayıs",
+    "haziran",
+    "temmuz",
+    "agustos",
+    "ağustos",
+    "eylul",
+    "eylül",
+    "ekim",
+    "kasim",
+    "kasım",
+    "aralik",
+    "aralık",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+)
 
 DOCUMENT_KEYWORDS: dict[DocumentType, tuple[tuple[str, float], ...]] = {
     DocumentType.PSW: (("part submission warrant", 0.95), (" psw ", 0.76), ("warrant status", 0.7)),
@@ -152,7 +233,7 @@ class UploadSubmissionBuilder:
         documents: list[DocumentRecord] = []
         for file_name, payload in files:
             parsed = self._parse_document(file_name, payload)
-            documents.append(parsed.document)
+            documents.extend(parsed.documents)
             warnings.extend(parsed.warnings)
 
         hydrated_context = self._hydrate_context(context, documents)
@@ -174,17 +255,25 @@ class UploadSubmissionBuilder:
         except Exception as exc:
             warning = f"{file_name}: parser failed ({exc}). Manual review is required."
             return ParsedUploadDocument(
-                document=DocumentRecord(
-                    file_name=file_name,
-                    document_type=DocumentType.UNKNOWN,
-                    classification_confidence=0.25,
-                    notes=[
-                        "File parsing failed, so no verifiable machine extraction is available for this document.",
-                    ],
-                ),
+                documents=[
+                    DocumentRecord(
+                        file_name=file_name,
+                        document_type=DocumentType.UNKNOWN,
+                        classification_confidence=0.25,
+                        notes=[
+                            "File parsing failed, so no verifiable machine extraction is available for this document.",
+                        ],
+                    )
+                ],
                 warnings=[warning],
             )
         joined_text = "\n".join(fragment.text for fragment in fragments if fragment.text).strip()
+
+        if suffix == ".pdf":
+            pdf_documents, pdf_warnings = self._parse_pdf_bundle(file_name, fragments)
+            warnings.extend(pdf_warnings)
+            if pdf_documents:
+                return ParsedUploadDocument(documents=pdf_documents, warnings=warnings)
 
         document_type, classification_confidence = self._classify_document(file_name, joined_text)
         metadata = self._extract_metadata(file_name, fragments)
@@ -220,7 +309,7 @@ class UploadSubmissionBuilder:
             certificates=structured["certificates"],
             notes=notes,
         )
-        return ParsedUploadDocument(document=document, warnings=warnings)
+        return ParsedUploadDocument(documents=[document], warnings=warnings)
 
     def _extract_content(
         self,
@@ -258,6 +347,140 @@ class UploadSubmissionBuilder:
             text = page.extract_text() or ""
             fragments.append(TextFragment(text=text, page_number=index))
         return fragments
+
+    def _parse_pdf_bundle(
+        self,
+        file_name: str,
+        fragments: list[TextFragment],
+    ) -> tuple[list[DocumentRecord], list[str]]:
+        sections = self._build_pdf_sections(file_name, fragments)
+        if len(sections) <= 1:
+            return [], []
+
+        warnings = [
+            f"{file_name}: bundled PDF was split into {len(sections)} virtual evidence sections for validation."
+        ]
+        shared_metadata = self._extract_metadata(file_name, fragments)
+        documents: list[DocumentRecord] = []
+        for section in sections:
+            section_metadata = self._extract_metadata(file_name, section.fragments)
+            section_metadata = self._merge_shared_metadata(section_metadata, shared_metadata)
+            section_metadata = self._merge_filename_inference(file_name, section_metadata)
+            notes = [
+                f"Virtual document extracted from bundled PDF pages {self._page_span_text(section.start_page, section.end_page)}.",
+                f"Detected section: {section.section_label}.",
+            ]
+            if section.document_type == DocumentType.PSW and "ppa" in section.section_label.lower():
+                notes.append(
+                    "VDA/PPA cover sheet was treated as PSW-equivalent submission warrant evidence."
+                )
+
+            documents.append(
+                DocumentRecord(
+                    file_name=self._section_file_name(file_name, section.start_page, section.end_page),
+                    document_type=section.document_type,
+                    classification_confidence=section.classification_confidence,
+                    metadata=section_metadata,
+                    notes=notes,
+                )
+            )
+
+        return documents, warnings
+
+    def _build_pdf_sections(
+        self,
+        file_name: str,
+        fragments: list[TextFragment],
+    ) -> list[PdfSection]:
+        sections: list[PdfSection] = []
+        mergeable_types = {
+            DocumentType.DIMENSIONAL_RESULTS,
+            DocumentType.MATERIAL_RESULTS,
+            DocumentType.PERFORMANCE_RESULTS,
+            DocumentType.OEM_SPECIFIC,
+            DocumentType.ENGINEERING_CHANGE,
+        }
+
+        for fragment in fragments:
+            page_number = fragment.page_number or 0
+            text = fragment.text.strip()
+            document_type, confidence, section_label = self._classify_pdf_page(file_name, fragment)
+
+            if not text:
+                if sections:
+                    sections[-1].fragments.append(fragment)
+                    sections[-1].end_page = max(sections[-1].end_page, page_number)
+                continue
+
+            if document_type == DocumentType.UNKNOWN and len(text) < 240 and sections:
+                sections[-1].fragments.append(fragment)
+                sections[-1].end_page = max(sections[-1].end_page, page_number)
+                continue
+
+            if (
+                sections
+                and sections[-1].document_type == document_type
+                and document_type in mergeable_types
+                and page_number == sections[-1].end_page + 1
+            ):
+                sections[-1].fragments.append(fragment)
+                sections[-1].end_page = page_number
+                sections[-1].classification_confidence = max(
+                    sections[-1].classification_confidence,
+                    confidence,
+                )
+                continue
+
+            if document_type == DocumentType.UNKNOWN:
+                continue
+
+            sections.append(
+                PdfSection(
+                    document_type=document_type,
+                    classification_confidence=confidence,
+                    start_page=page_number,
+                    end_page=page_number,
+                    section_label=section_label,
+                    fragments=[fragment],
+                )
+            )
+
+        return sections
+
+    def _classify_pdf_page(
+        self,
+        file_name: str,
+        fragment: TextFragment,
+    ) -> tuple[DocumentType, float, str]:
+        compact = re.sub(r"\s+", " ", fragment.text).strip().lower()
+        if not compact:
+            return DocumentType.UNKNOWN, 0.0, "blank page"
+
+        if (
+            "cover sheet ppa report" in compact
+            or "report on production process and product approval" in compact
+        ):
+            return DocumentType.PSW, 0.97, "VDA/PPA cover sheet"
+        if "productionprocess-related and general deliverables" in compact:
+            return DocumentType.OEM_SPECIFIC, 0.86, "PPA deliverables index"
+        if "product-related deliverables" in compact:
+            if "chemical composition" in compact or "hardness:" in compact:
+                return DocumentType.MATERIAL_RESULTS, 0.95, "Material check report"
+            if "actual values of organization" in compact and "requirements / specification" in compact:
+                return DocumentType.DIMENSIONAL_RESULTS, 0.95, "Dimensional report"
+        if compact.startswith("radiographic evaluation"):
+            return DocumentType.PERFORMANCE_RESULTS, 0.95, "Radiographic evaluation"
+        if "mds report" in compact or "imds id / version" in compact:
+            return DocumentType.OEM_SPECIFIC, 0.9, "IMDS report"
+        if "self-assessment product" in compact:
+            return DocumentType.OEM_SPECIFIC, 0.9, "Self-assessment product"
+        if "self-assessment process" in compact:
+            return DocumentType.OEM_SPECIFIC, 0.9, "Self-assessment process"
+        if "part history" in compact:
+            return DocumentType.ENGINEERING_CHANGE, 0.88, "Part history"
+
+        document_type, confidence = self._classify_document(file_name, fragment.text)
+        return document_type, confidence, document_type.value.replace("_", " ").title()
 
     def _extract_workbook(self, payload: bytes) -> tuple[list[TextFragment], list[TableSection]]:
         workbook = load_workbook(io.BytesIO(payload), data_only=True, read_only=True)
@@ -319,30 +542,39 @@ class UploadSubmissionBuilder:
         field_name: str,
         patterns: list[tuple[re.Pattern[str], float]],
     ) -> ExtractedValue | None:
+        best_match: ExtractedValue | None = None
+        best_score = -1.0
         for fragment in fragments:
             for pattern, confidence in patterns:
-                match = pattern.search(fragment.text)
-                if not match:
-                    continue
-                value = self._normalize_capture(match.group(1))
-                if not value:
-                    continue
-                snippet = self._match_snippet(fragment.text, match.span(1))
-                evidence = EvidenceRef(
-                    file_name=file_name,
-                    page_number=fragment.page_number,
-                    section_name=fragment.section_name,
-                    field_name=field_name,
-                    snippet=snippet,
-                    confidence=confidence,
-                )
-                return ExtractedValue(
-                    value=value,
-                    status=ExtractionStatus.VERIFIED,
-                    confidence=confidence,
-                    evidence=[evidence],
-                )
-        return None
+                for match in pattern.finditer(fragment.text):
+                    value = self._clean_field_value(field_name, match.group(1))
+                    if not value:
+                        continue
+                    snippet = self._match_snippet(fragment.text, match.span(1))
+                    evidence = EvidenceRef(
+                        file_name=file_name,
+                        page_number=fragment.page_number,
+                        section_name=fragment.section_name,
+                        field_name=field_name,
+                        snippet=snippet,
+                        confidence=confidence,
+                    )
+                    score = confidence + self._field_quality_score(
+                        field_name,
+                        value,
+                        snippet,
+                        fragment.page_number,
+                    )
+                    if score <= best_score:
+                        continue
+                    best_score = score
+                    best_match = ExtractedValue(
+                        value=value,
+                        status=ExtractionStatus.VERIFIED,
+                        confidence=min(0.99, score),
+                        evidence=[evidence],
+                    )
+        return best_match
 
     def _merge_filename_inference(
         self,
@@ -367,6 +599,17 @@ class UploadSubmissionBuilder:
                     break
 
         return metadata
+
+    def _merge_shared_metadata(
+        self,
+        metadata: dict[str, ExtractedValue],
+        shared_metadata: dict[str, ExtractedValue],
+    ) -> dict[str, ExtractedValue]:
+        merged = dict(metadata)
+        for key, value in shared_metadata.items():
+            if key not in merged and value.is_present:
+                merged[key] = value
+        return merged
 
     def _low_confidence_filename_value(
         self,
@@ -696,6 +939,121 @@ class UploadSubmissionBuilder:
         value = re.sub(r"\s+", " ", value.replace("\u00a0", " ")).strip(" :;-")
         return value
 
+    def _clean_field_value(self, field_name: str, value: str) -> str | None:
+        cleaned = self._normalize_capture(value)
+        if not cleaned:
+            return None
+
+        if field_name in {"part_number", "drawing_number"}:
+            cleaned = re.split(
+                r"\b(?:hardware version|part number|name|drawing number|diagnosis status|software version|version / date|identification(?:/duns)?)\b",
+                cleaned,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip(" -")
+            if cleaned.upper() in {"NO", "NO.", "YES", "OK", "NOK", "-"}:
+                return None
+            if len(re.sub(r"[^A-Z0-9]", "", cleaned.upper())) < 4:
+                return None
+
+        if field_name == "revision":
+            cleaned = cleaned.split("/")[0].strip()
+            if not cleaned or cleaned.lower().startswith("fr."):
+                return None
+            if any(token in cleaned.lower() for token in MONTH_TOKENS):
+                return None
+            if len(cleaned) > 12:
+                return None
+
+        if field_name == "customer_name":
+            if "customer" in cleaned.lower() and not cleaned.lower().startswith("customer"):
+                cleaned = cleaned.lower().rsplit("customer", 1)[-1].strip(" -").title()
+            cleaned = re.split(
+                r"\b(?:report number|delivery note number|report version|delivery quantity|delivery location|batch number|order number|production location|sample weight|unloading point|remark|department|telephone|signature|date)\b",
+                cleaned,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip(" -")
+            if any(
+                token in cleaned.lower()
+                for token in (
+                    "customer-ready",
+                    "not customer-ready",
+                    "ready for series production",
+                    "decision",
+                    "new ppa procedure required",
+                    "update of ppa documentation required",
+                    "new part",
+                )
+            ):
+                return None
+
+        if field_name == "supplier_name":
+            cleaned = re.split(
+                r"\b(?:organization reason for report creation|information about the organization|information about samples|information about the customer)\b",
+                cleaned,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip(" -")
+            if any(
+                token in cleaned.lower()
+                for token in ("report number", "delivery note", "part number", "code:", "change number")
+            ):
+                return None
+            if cleaned.lower() in {"version", "customer", "organization", "name"}:
+                return None
+
+        if field_name == "process_name" and cleaned.lower() in {
+            "related and general",
+            "product-related",
+            "process-related and general",
+            "productionprocess-related and general",
+        }:
+            return None
+
+        if field_name == "material":
+            if cleaned.upper() in {"NO", "NO.", "YES", "OK", "NOK"}:
+                return None
+            if any(
+                token in cleaned.lower()
+                for token in (
+                    "series material",
+                    "materials which are subject",
+                    "specification not met",
+                    "customer acceptance granted",
+                )
+            ):
+                return None
+
+        return cleaned or None
+
+    def _field_quality_score(
+        self,
+        field_name: str,
+        value: str,
+        snippet: str,
+        page_number: int | None,
+    ) -> float:
+        score = 0.0
+        lowered_value = value.lower()
+        lowered_snippet = snippet.lower()
+
+        if page_number and page_number <= 3:
+            score += 0.03
+        if field_name in {"part_number", "drawing_number"} and any(char.isdigit() for char in value):
+            score += 0.03
+        if field_name == "supplier_name" and any(token in lowered_snippet for token in ("organization", "supplier")):
+            score += 0.05
+        if field_name == "customer_name" and "customer" in lowered_snippet:
+            score += 0.04
+        if field_name == "revision" and re.fullmatch(r"[A-Z0-9]{1,8}", value):
+            score += 0.04
+        if field_name == "process_name":
+            score -= 0.05
+        if any(token in lowered_value for token in ("report version", "delivery quantity", "telephone")):
+            score -= 0.08
+        return score
+
     def _normalized_haystack(self, file_name: str, text: str) -> str:
         normalized = re.sub(r"[^a-z0-9]+", " ", f"{file_name} {text}".lower())
         return f" {normalized.strip()} "
@@ -744,3 +1102,11 @@ class UploadSubmissionBuilder:
             snippet=" | ".join(cell for cell in row if cell)[:220],
             confidence=confidence,
         )
+
+    def _section_file_name(self, file_name: str, start_page: int, end_page: int) -> str:
+        return f"{file_name} [{self._page_span_text(start_page, end_page)}]"
+
+    def _page_span_text(self, start_page: int, end_page: int) -> str:
+        if start_page == end_page:
+            return f"p. {start_page}"
+        return f"pp. {start_page}-{end_page}"
