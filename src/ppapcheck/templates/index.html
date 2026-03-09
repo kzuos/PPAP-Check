@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PPAPcheck</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='site.css') }}">
+</head>
+<body>
+    <div class="page-shell">
+        <header class="hero">
+            <div>
+                <p class="eyebrow">PPAPCHECK</p>
+                <h1>Submission Readiness Review</h1>
+                <p class="lead">Strict, evidence-based PPAP and FAIR validation with traceability, conflict detection, and blocking logic.</p>
+            </div>
+            <form class="sample-picker" method="get" action="/">
+                <label for="sample">Review scenario</label>
+                <select name="sample" id="sample">
+                    {% for option in sample_options %}
+                    <option value="{{ option.id }}" {% if option.selected %}selected{% endif %}>{{ option.id }}</option>
+                    {% endfor %}
+                </select>
+                <p class="picker-detail">
+                    {% for option in sample_options %}
+                    {% if option.selected %}{{ option.description }}{% endif %}
+                    {% endfor %}
+                </p>
+                <button type="submit">Load evidence set</button>
+                <a class="download-link" href="/api/samples/{{ sample_id }}/expert-report">Download expert report</a>
+            </form>
+        </header>
+
+        <section class="status-strip">
+            <article class="status-card decision {{ report.overall_decision|lower }}">
+                <span>Decision</span>
+                <strong>{{ report.overall_decision }}</strong>
+            </article>
+            <article class="status-card">
+                <span>Mode</span>
+                <strong>{{ report.submission_mode }}</strong>
+            </article>
+            <article class="status-card">
+                <span>Score</span>
+                <strong>{{ report.overall_score }}</strong>
+            </article>
+            <article class="status-card">
+                <span>Confidence</span>
+                <strong>{{ report.confidence }}</strong>
+            </article>
+        </section>
+
+        <main class="grid">
+            <section class="panel">
+                <h2>Master Record</h2>
+                <dl class="record-grid">
+                    <div><dt>Part number</dt><dd>{{ report.metadata_master_record.part_number or "not found" }}</dd></div>
+                    <div><dt>Drawing number</dt><dd>{{ report.metadata_master_record.drawing_number or "not found" }}</dd></div>
+                    <div><dt>Revision</dt><dd>{{ report.metadata_master_record.revision or "not found" }}</dd></div>
+                    <div><dt>Customer</dt><dd>{{ report.metadata_master_record.customer or "not found" }}</dd></div>
+                    <div><dt>Supplier</dt><dd>{{ report.metadata_master_record.supplier or "not found" }}</dd></div>
+                    <div><dt>Process</dt><dd>{{ report.metadata_master_record.process or "not found" }}</dd></div>
+                    <div><dt>Material</dt><dd>{{ report.metadata_master_record.material or "not found" }}</dd></div>
+                </dl>
+            </section>
+
+            <section class="panel">
+                <h2>Missing Documents</h2>
+                {% if report.missing_documents %}
+                <ul class="issue-list">
+                    {% for item in report.missing_documents %}
+                    <li class="sev-major">{{ item }}</li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="empty-state">No required documents were verified as missing.</p>
+                {% endif %}
+            </section>
+
+            <section class="panel full-width">
+                <h2>Nonconformities</h2>
+                {% if report.nonconformities %}
+                <div class="stack">
+                    {% for item in report.nonconformities %}
+                    <article class="finding-card sev-{{ item.severity.value|lower|replace(' ', '-') }}">
+                        <div class="finding-topline">
+                            <span class="badge">{{ item.severity }}</span>
+                            <strong>{{ item.title }}</strong>
+                        </div>
+                        <p>{{ item.description }}</p>
+                        {% if item.suggested_action %}
+                        <p class="action">Action: {{ item.suggested_action }}</p>
+                        {% endif %}
+                        {% if item.evidence %}
+                        <ul class="evidence-list">
+                            {% for evidence in item.evidence %}
+                            <li>{{ evidence.file_name }}{% if evidence.page_number %}, p.{{ evidence.page_number }}{% endif %}{% if evidence.field_name %}, {{ evidence.field_name }}{% endif %}{% if evidence.snippet %} - {{ evidence.snippet }}{% endif %} ({{ "%.2f"|format(evidence.confidence) }})</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                    </article>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="empty-state">No nonconformities were raised.</p>
+                {% endif %}
+            </section>
+
+            <section class="panel">
+                <h2>Required Documents</h2>
+                <ul class="requirement-list">
+                    {% for item in report.required_documents %}
+                    <li class="requirement requirement-{{ item.status }}">
+                        <strong>{{ item.document_label }}</strong>
+                        <span>{{ item.status }}</span>
+                        <p>{{ item.rationale }}</p>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </section>
+
+            <section class="panel">
+                <h2>Document Inventory</h2>
+                <div class="stack">
+                    {% for item in report.document_inventory %}
+                    <article class="inventory-card">
+                        <div class="inventory-title">
+                            <strong>{{ item.file_name }}</strong>
+                            <span>{{ item.document_label }}</span>
+                        </div>
+                        <p>Classification confidence: {{ "%.2f"|format(item.classification_confidence) }}</p>
+                        {% if item.key_metadata %}
+                        <ul class="meta-list">
+                            {% for key, value in item.key_metadata.items() %}
+                            <li><span>{{ key }}</span><strong>{{ value }}</strong></li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                        {% if item.findings %}
+                        <ul class="issue-list compact">
+                            {% for finding in item.findings %}
+                            <li>{{ finding }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                    </article>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>Traceability Checks</h2>
+                <ul class="check-list">
+                    {% for item in report.traceability_checks %}
+                    <li class="check check-{{ item.status }}">
+                        <strong>{{ item.name }}</strong>
+                        <span>{{ item.status }}</span>
+                        <p>{{ item.description }}</p>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </section>
+
+            <section class="panel">
+                <h2>Manual Review Flags</h2>
+                {% if report.manual_review_flags %}
+                <ul class="issue-list">
+                    {% for item in report.manual_review_flags %}
+                    <li class="sev-minor">
+                        <strong>{{ item.title }}</strong><br>
+                        {{ item.description }}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="empty-state">No manual review flags were raised.</p>
+                {% endif %}
+            </section>
+
+            <section class="panel full-width">
+                <h2>Expert Report</h2>
+                <pre class="expert-report">{{ report.expert_report }}</pre>
+            </section>
+
+            <section class="panel full-width">
+                <h2>Machine-Readable Output</h2>
+                <pre class="json-report">{{ report_json }}</pre>
+            </section>
+        </main>
+    </div>
+</body>
+</html>
