@@ -9,27 +9,123 @@
 <body>
     <div class="page-shell">
         <header class="hero">
-            <div>
+            <div class="hero-copy">
                 <p class="eyebrow">PPAPCHECK</p>
                 <h1>Submission Readiness Review</h1>
-                <p class="lead">Strict, evidence-based PPAP and FAIR validation with traceability, conflict detection, and blocking logic.</p>
+                <p class="lead">Strict, evidence-based PPAP and FAIR validation with missing-document detection, metadata conflict checking, and traceability-focused reporting.</p>
+                <div class="hero-tags">
+                    <span class="tag">Upload real files</span>
+                    <span class="tag">No unsupported claims</span>
+                    <span class="tag">Manual review flags stay visible</span>
+                </div>
             </div>
-            <form class="sample-picker" method="get" action="/">
-                <label for="sample">Review scenario</label>
-                <select name="sample" id="sample">
-                    {% for option in sample_options %}
-                    <option value="{{ option.id }}" {% if option.selected %}selected{% endif %}>{{ option.id }}</option>
-                    {% endfor %}
-                </select>
-                <p class="picker-detail">
-                    {% for option in sample_options %}
-                    {% if option.selected %}{{ option.description }}{% endif %}
-                    {% endfor %}
-                </p>
-                <button type="submit">Load evidence set</button>
-                <a class="download-link" href="/api/samples/{{ sample_id }}/expert-report">Download expert report</a>
-            </form>
+            <div class="control-stack">
+                <form class="sample-picker" method="get" action="/">
+                    <h2>Sample Review</h2>
+                    <label for="sample">Review scenario</label>
+                    <select name="sample" id="sample">
+                        {% for option in sample_options %}
+                        <option value="{{ option.id }}" {% if option.selected %}selected{% endif %}>{{ option.id }}</option>
+                        {% endfor %}
+                    </select>
+                    <p class="picker-detail">
+                        {% for option in sample_options %}
+                        {% if option.selected %}{{ option.description }}{% endif %}
+                        {% endfor %}
+                    </p>
+                    <button type="submit">Load sample package</button>
+                    {% if active_source == "sample" %}
+                    <a class="download-link" href="/api/samples/{{ sample_id }}/expert-report">Download sample expert report</a>
+                    {% endif %}
+                </form>
+
+                <form class="upload-form" method="post" action="/" enctype="multipart/form-data">
+                    <h2>Upload Submission</h2>
+                    <p class="picker-detail">Best results come from uploading separate PPAP or FAIR elements. Text-based PDFs, TXT, CSV, TSV, and XLSX files are supported in this release. Scanned image PDFs will be flagged for manual review because OCR is not enabled yet.</p>
+
+                    <label for="files">Submission files</label>
+                    <input id="files" name="files" type="file" multiple required>
+
+                    <div class="form-grid">
+                        <div>
+                            <label for="requested_submission_mode">Submission mode</label>
+                            <select id="requested_submission_mode" name="requested_submission_mode">
+                                {% for mode in ["UNKNOWN", "PPAP", "FAI", "HYBRID"] %}
+                                <option value="{{ mode }}" {% if form_values.requested_submission_mode == mode %}selected{% endif %}>{{ mode }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="ppap_level">PPAP level</label>
+                            <input id="ppap_level" name="ppap_level" type="text" value="{{ form_values.ppap_level }}" placeholder="1-5">
+                        </div>
+                        <div>
+                            <label for="customer_oem">Customer / OEM</label>
+                            <input id="customer_oem" name="customer_oem" type="text" value="{{ form_values.customer_oem }}" placeholder="Ford, Stellantis, Airbus">
+                        </div>
+                        <div>
+                            <label for="supplier_name">Supplier</label>
+                            <input id="supplier_name" name="supplier_name" type="text" value="{{ form_values.supplier_name }}" placeholder="Supplier name">
+                        </div>
+                        <div>
+                            <label for="part_number">Part number</label>
+                            <input id="part_number" name="part_number" type="text" value="{{ form_values.part_number }}" placeholder="Optional override">
+                        </div>
+                        <div>
+                            <label for="drawing_number">Drawing number</label>
+                            <input id="drawing_number" name="drawing_number" type="text" value="{{ form_values.drawing_number }}" placeholder="Optional override">
+                        </div>
+                        <div>
+                            <label for="revision">Revision</label>
+                            <input id="revision" name="revision" type="text" value="{{ form_values.revision }}" placeholder="Optional override">
+                        </div>
+                        <div>
+                            <label for="material">Material</label>
+                            <input id="material" name="material" type="text" value="{{ form_values.material }}" placeholder="Optional override">
+                        </div>
+                    </div>
+
+                    <label for="manufacturing_process">Manufacturing process</label>
+                    <input id="manufacturing_process" name="manufacturing_process" type="text" value="{{ form_values.manufacturing_process }}" placeholder="Stamping, CNC machining, molding">
+
+                    <label for="special_processes">Special processes</label>
+                    <input id="special_processes" name="special_processes" type="text" value="{{ form_values.special_processes }}" placeholder="Comma-separated">
+
+                    <label for="customer_specific_rules">Customer-specific requirements</label>
+                    <textarea id="customer_specific_rules" name="customer_specific_rules" rows="3" placeholder="Comma-separated rules, thresholds, or customer notes">{{ form_values.customer_specific_rules }}</textarea>
+
+                    <button type="submit">Analyze uploaded package</button>
+                </form>
+            </div>
         </header>
+
+        {% if error_message %}
+        <section class="banner banner-error">
+            <strong>Upload issue:</strong> {{ error_message }}
+        </section>
+        {% endif %}
+
+        {% if upload_warnings %}
+        <section class="banner banner-warning">
+            <strong>Upload warnings:</strong>
+            <ul class="inline-list">
+                {% for warning in upload_warnings %}
+                <li>{{ warning }}</li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
+
+        {% if uploaded_files %}
+        <section class="banner banner-info">
+            <strong>Uploaded files:</strong>
+            <ul class="inline-list">
+                {% for item in uploaded_files %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
 
         <section class="status-strip">
             <article class="status-card decision {{ report.overall_decision|lower }}">
@@ -47,6 +143,10 @@
             <article class="status-card">
                 <span>Confidence</span>
                 <strong>{{ report.confidence }}</strong>
+            </article>
+            <article class="status-card">
+                <span>Source</span>
+                <strong>{{ active_source|upper }}</strong>
             </article>
         </section>
 
@@ -94,7 +194,7 @@
                         {% if item.evidence %}
                         <ul class="evidence-list">
                             {% for evidence in item.evidence %}
-                            <li>{{ evidence.file_name }}{% if evidence.page_number %}, p.{{ evidence.page_number }}{% endif %}{% if evidence.field_name %}, {{ evidence.field_name }}{% endif %}{% if evidence.snippet %} - {{ evidence.snippet }}{% endif %} ({{ "%.2f"|format(evidence.confidence) }})</li>
+                            <li>{{ evidence.file_name }}{% if evidence.page_number %}, p.{{ evidence.page_number }}{% endif %}{% if evidence.section_name %}, {{ evidence.section_name }}{% endif %}{% if evidence.field_name %}, {{ evidence.field_name }}{% endif %}{% if evidence.snippet %} - {{ evidence.snippet }}{% endif %} ({{ "%.2f"|format(evidence.confidence) }})</li>
                             {% endfor %}
                         </ul>
                         {% endif %}

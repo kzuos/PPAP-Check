@@ -36,10 +36,35 @@ body {
 
 .hero {
     display: grid;
-    grid-template-columns: 1.8fr 1fr;
+    grid-template-columns: 1.2fr 1.4fr;
     gap: 1.25rem;
     align-items: start;
     margin-bottom: 1.5rem;
+}
+
+.hero-copy {
+    padding: 0.5rem 0;
+}
+
+.hero-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-top: 1rem;
+}
+
+.tag {
+    padding: 0.45rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 253, 248, 0.72);
+    color: var(--text);
+    font-size: 0.88rem;
+}
+
+.control-stack {
+    display: grid;
+    gap: 1rem;
 }
 
 .eyebrow {
@@ -64,6 +89,7 @@ h1 {
 }
 
 .sample-picker,
+.upload-form,
 .panel,
 .status-card {
     background: var(--panel);
@@ -72,25 +98,38 @@ h1 {
     box-shadow: 0 16px 40px rgba(48, 36, 24, 0.08);
 }
 
-.sample-picker {
+.sample-picker,
+.upload-form {
     padding: 1rem;
 }
 
 .sample-picker label,
 .sample-picker select,
 .sample-picker button,
+.sample-picker input,
+.upload-form label,
+.upload-form select,
+.upload-form input,
+.upload-form textarea,
+.upload-form button,
 .download-link {
     display: block;
     width: 100%;
 }
 
 .sample-picker select,
-.sample-picker button {
+.sample-picker button,
+.sample-picker input,
+.upload-form select,
+.upload-form input,
+.upload-form textarea,
+.upload-form button {
     margin-top: 0.5rem;
     border-radius: 0.8rem;
     padding: 0.85rem 0.9rem;
     border: 1px solid var(--line);
     font: inherit;
+    background: white;
 }
 
 .sample-picker button {
@@ -98,6 +137,24 @@ h1 {
     background: #1d1a17;
     color: white;
     cursor: pointer;
+}
+
+.upload-form button {
+    margin-top: 1rem;
+    background: #8b3f11;
+    color: white;
+    cursor: pointer;
+}
+
+.upload-form textarea {
+    min-height: 5.5rem;
+    resize: vertical;
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
 }
 
 .download-link {
@@ -109,7 +166,7 @@ h1 {
 
 .status-strip {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 1rem;
     margin-bottom: 1.5rem;
 }
@@ -138,6 +195,42 @@ h1 {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 1rem;
+}
+
+.banner {
+    padding: 0.95rem 1rem;
+    border-radius: 1rem;
+    border: 1px solid var(--line);
+    margin-bottom: 1rem;
+    background: rgba(255, 253, 248, 0.9);
+}
+
+.banner-error {
+    border-color: rgba(166, 30, 20, 0.24);
+    background: rgba(252, 232, 228, 0.92);
+}
+
+.banner-warning {
+    border-color: rgba(191, 109, 21, 0.24);
+    background: rgba(255, 242, 227, 0.92);
+}
+
+.banner-info {
+    border-color: rgba(18, 79, 130, 0.2);
+    background: rgba(232, 243, 251, 0.92);
+}
+
+.inline-list {
+    list-style: none;
+    padding: 0;
+    margin: 0.45rem 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+}
+
+.inline-list li {
+    color: var(--muted);
 }
 
 .full-width {
@@ -272,7 +365,8 @@ h1 {
     .hero,
     .status-strip,
     .grid,
-    .record-grid {
+    .record-grid,
+    .form-grid {
         grid-template-columns: 1fr;
     }
 }

@@ -360,6 +360,9 @@ class DocumentRecord(BaseModel):
         normalized: dict[str, Any] = {}
         for key, item in value.items():
             normalized_key = canonical_metadata_key(key)
+            if isinstance(item, ExtractedValue):
+                normalized[normalized_key] = item
+                continue
             if isinstance(item, dict) and any(
                 field in item for field in ("value", "status", "confidence", "evidence")
             ):
@@ -492,4 +495,3 @@ class ValidationReport(BaseModel):
     manual_review_flags: list[ValidationFinding]
     recommended_actions: list[str]
     expert_report: str
-
