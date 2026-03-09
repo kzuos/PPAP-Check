@@ -127,6 +127,7 @@ class StandardsRuleEngine:
                     document_label=document.document_label,
                     classification_confidence=document.classification_confidence,
                     key_metadata=self._key_metadata(document),
+                    structured_counts=self._structured_counts(document),
                     findings=[finding.title for finding in findings_for_document + manual_flags_for_document],
                 )
             )
@@ -237,6 +238,24 @@ class StandardsRuleEngine:
             )
 
         for index, note in enumerate(document.notes, start=1):
+            lowered_note = note.lower()
+            if any(
+                token in lowered_note
+                for token in ("manual review", "ocr", "text extraction is sparse", "image-based", "text-poor")
+            ):
+                manual_review_flags.append(
+                    ValidationFinding(
+                        finding_id=f"manual-note-{document.document_id}-{index}",
+                        category="manual_review",
+                        severity=Severity.MINOR,
+                        title=f"Manual review required for {document.file_name}",
+                        description=note,
+                        related_documents=[document.document_type],
+                        confidence=min(document.classification_confidence, 0.62),
+                        suggested_action="Review the referenced pages visually before relying on the extracted result.",
+                    )
+                )
+                continue
             findings.append(
                 ValidationFinding(
                     finding_id=f"observation-{document.document_id}-{index}",
@@ -270,13 +289,33 @@ class StandardsRuleEngine:
         return Severity.MAJOR, False
 
     def _key_metadata(self, document: DocumentRecord) -> dict[str, str]:
-        keys = ("part_number", "drawing_number", "revision", "customer_name", "supplier_name", "process_name")
+        keys = ("part_number", "drawing_number", "revision", "customer_name", "supplier_name", "process_name", "material")
         metadata: dict[str, str] = {}
         for key in keys:
             value = document.get_text(key)
             if value:
                 metadata[key] = value
         return metadata
+
+    def _structured_counts(self, document: DocumentRecord) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        if document.drawing_characteristics:
+            counts["characteristics"] = len(document.drawing_characteristics)
+        if document.inspection_results:
+            counts["results"] = len(document.inspection_results)
+        if document.certificates:
+            counts["certificates"] = len(document.certificates)
+        if document.process_flow_steps:
+            counts["flow_steps"] = len(document.process_flow_steps)
+        if document.pfmea_entries:
+            counts["pfmea_rows"] = len(document.pfmea_entries)
+        if document.control_plan_entries:
+            counts["control_rows"] = len(document.control_plan_entries)
+        if document.capability_studies:
+            counts["capability_studies"] = len(document.capability_studies)
+        if document.msa_studies:
+            counts["msa_studies"] = len(document.msa_studies)
+        return counts
 
     def _field_evidence(
         self,

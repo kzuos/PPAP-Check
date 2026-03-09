@@ -23,6 +23,18 @@ class ReportGenerator:
             f"- [{finding.severity}] {finding.title}: {finding.description}"
             for finding in highest_risk
         ] or ["- No major nonconformities were verified in the current evidence set."]
+        measurement_summary_lines = (
+            [
+                f"- Extracted characteristics: {report.measurement_summary.total_characteristics}",
+                f"- Extracted measurement results: {report.measurement_summary.total_results}",
+                f"- Passed results: {report.measurement_summary.passed_results}",
+                f"- Failed results: {report.measurement_summary.failed_results}",
+                f"- Unclear results: {report.measurement_summary.unclear_results}",
+                f"- Attribute or non-numeric rows: {report.measurement_summary.attribute_results}",
+            ]
+            if report.measurement_summary.total_results
+            else ["- No dimensional or FAIR measurement rows were extracted in the current evidence set."]
+        )
 
         missing_lines = (
             [f"- {document}" for document in report.missing_documents]
@@ -77,6 +89,9 @@ class ReportGenerator:
             "# Missing Documents",
             *missing_lines,
             "",
+            "# Measurement Evidence Summary",
+            *measurement_summary_lines,
+            "",
             "# Cross-Document Mismatches",
             *conflict_lines,
             "",
@@ -109,4 +124,3 @@ class ReportGenerator:
             seen.add(finding.suggested_action)
             actions.append(finding.suggested_action)
         return actions
-

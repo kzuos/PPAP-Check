@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import re
+
 from ppapcheck.models import (
     CharacteristicType,
     DocumentType,
+    MeasurementSummary,
     Severity,
     SubmissionMode,
     SubmissionPackage,
@@ -20,9 +23,50 @@ class TechnicalQualityValidator:
         findings.extend(self._check_msa_presence(package, mode))
         findings.extend(self._check_out_of_tolerance_results(package))
         findings.extend(self._check_measurement_context(package))
+        findings.extend(self._check_measurement_evaluability(package))
+        findings.extend(self._check_material_evidence_traceability(package))
         findings.extend(self._check_pfmea_to_control_plan(package))
 
         return findings
+
+    def summarize_measurements(self, package: SubmissionPackage) -> MeasurementSummary:
+        source_documents = [
+            document
+            for document in package.documents
+            if document.document_type in {DocumentType.DIMENSIONAL_RESULTS, DocumentType.FAIR}
+        ]
+        results = [
+            result
+            for document in source_documents
+            for result in document.inspection_results
+        ]
+        characteristic_ids = {
+            characteristic.characteristic_id
+            for document in source_documents
+            for characteristic in document.drawing_characteristics
+            if characteristic.characteristic_id
+        }
+        characteristic_ids.update(
+            result.characteristic_id
+            for result in results
+            if result.characteristic_id
+        )
+        return MeasurementSummary(
+            total_characteristics=len(characteristic_ids),
+            total_results=len(results),
+            passed_results=sum(1 for result in results if result.result.value == "pass"),
+            failed_results=sum(1 for result in results if result.result.value == "fail"),
+            unclear_results=sum(1 for result in results if result.result.value == "unclear"),
+            numeric_results=sum(
+                1 for result in results if self._parse_numeric_value(result.measured_value) is not None
+            ),
+            attribute_results=sum(
+                1
+                for result in results
+                if result.measured_value and self._parse_numeric_value(result.measured_value) is None
+            ),
+            source_documents=[document.file_name for document in source_documents],
+        )
 
     def _check_capability_coverage(
         self, package: SubmissionPackage, mode: SubmissionMode
@@ -163,6 +207,89 @@ class TechnicalQualityValidator:
             )
         ]
 
+    def _check_measurement_evaluability(self, package: SubmissionPackage) -> list[ValidationFinding]:
+        summary = self.summarize_measurements(package)
+        if summary.total_results < 15 or summary.unclear_results == 0:
+            return []
+
+        unclear_ratio = summary.unclear_results / summary.total_results
+        if unclear_ratio < 0.15:
+            return []
+
+        evidence = []
+        related_characteristics: list[str] = []
+        for document in package.documents:
+            if document.document_type not in {DocumentType.DIMENSIONAL_RESULTS, DocumentType.FAIR}:
+                continue
+            for result in document.inspection_results:
+                if result.result.value != "unclear":
+                    continue
+                if result.evidence:
+                    evidence.append(result.evidence[0])
+                identifier = result.balloon_number or result.characteristic_id
+                if identifier and identifier not in related_characteristics:
+                    related_characteristics.append(identifier)
+                if len(evidence) >= 6:
+                    break
+            if len(evidence) >= 6:
+                break
+
+        severity = Severity.MAJOR if unclear_ratio >= 0.35 and summary.total_results >= 30 else Severity.MINOR
+        percent = round(unclear_ratio * 100)
+        return [
+            ValidationFinding(
+                finding_id="tech-measurement-evaluability",
+                category="technical_quality",
+                severity=severity,
+                title="A substantial share of measured results requires manual engineering review",
+                description=(
+                    f"{summary.unclear_results} of {summary.total_results} extracted measurement results ({percent}%) "
+                    "could not be automatically evaluated against the extracted tolerance context. "
+                    "This usually indicates attribute checks, gauge-only entries, geometric callouts, or tolerance syntax that needs visual review."
+                ),
+                evidence=evidence,
+                related_documents=[DocumentType.DIMENSIONAL_RESULTS, DocumentType.FAIR],
+                related_characteristics=related_characteristics[:12],
+                suggested_action="Visually review the unclear measurement rows against the native report and released drawing before using the package decision without human sign-off.",
+            )
+        ]
+
+    def _check_material_evidence_traceability(self, package: SubmissionPackage) -> list[ValidationFinding]:
+        material_documents = [
+            document
+            for document in package.documents
+            if document.document_type == DocumentType.MATERIAL_RESULTS
+        ]
+        if not material_documents:
+            return []
+
+        if any(document.certificates for document in material_documents):
+            return []
+
+        evidence = []
+        for document in material_documents:
+            material_field = document.get_field("material")
+            if material_field.evidence:
+                evidence.append(material_field.evidence[0])
+            if len(evidence) >= 4:
+                break
+
+        return [
+            ValidationFinding(
+                finding_id="tech-material-traceability-missing",
+                category="technical_quality",
+                severity=Severity.MAJOR,
+                title="Material test evidence lacks identifiable batch or specification linkage",
+                description=(
+                    "Material results were provided, but no verifiable material specification or supplier batch reference was extracted. "
+                    "Material traceability remains incomplete."
+                ),
+                evidence=evidence,
+                related_documents=[DocumentType.MATERIAL_RESULTS, DocumentType.MATERIAL_CERTIFICATE],
+                suggested_action="Attach the material certificate or update the material report so the material grade and supplier batch can be verified directly.",
+            )
+        ]
+
     def _check_pfmea_to_control_plan(self, package: SubmissionPackage) -> list[ValidationFinding]:
         pfmea_entries = [
             entry
@@ -211,3 +338,14 @@ class TechnicalQualityValidator:
                 suggested_action="Update the Control Plan so each high-risk PFMEA row is linked to a control method and reaction plan.",
             )
         ]
+
+    def _parse_numeric_value(self, value: str | None) -> float | None:
+        if not value:
+            return None
+        normalized = value.replace(",", ".")
+        if "x" in normalized.lower():
+            return None
+        match = re.search(r"[+-]?\d+(?:\.\d+)?", normalized)
+        if not match:
+            return None
+        return float(match.group(0))

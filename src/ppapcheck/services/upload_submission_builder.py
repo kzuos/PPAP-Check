@@ -294,7 +294,20 @@ class UploadSubmissionBuilder:
             notes.append(
                 "No reliable machine-readable PDF text was extracted. Scanned or image-based pages require OCR or manual review."
             )
-            warnings.append(f"{file_name}: PDF appears image-based or text-poor; OCR is not enabled yet.")
+            warnings.append(f"{file_name}: PDF appears image-based or text-poor; OCR or manual review is required.")
+        elif suffix == ".pdf":
+            sparse_pages = [
+                fragment.page_number
+                for fragment in fragments
+                if fragment.page_number is not None and len(re.sub(r"\s+", "", fragment.text or "")) < 40
+            ]
+            if sparse_pages:
+                page_text = ", ".join(str(page) for page in sparse_pages[:10])
+                if len(sparse_pages) > 10:
+                    page_text += ", ..."
+                notes.append(
+                    f"Text extraction is sparse on pages {page_text}; OCR or manual review is required for complete visual verification."
+                )
         if document_type == DocumentType.UNKNOWN:
             notes.append(
                 "Document type could not be classified confidently from file content. Validation coverage may be incomplete."
@@ -404,18 +417,26 @@ class UploadSubmissionBuilder:
             if fragment.page_number is not None and len(re.sub(r"\s+", "", fragment.text or "")) < 40
         ]
         if low_text_pages:
-            ocr_result = self.ocr_service.extract_pdf_pages(payload, low_text_pages[:10])
-            warnings.extend(f"{file_name}: {warning}" for warning in ocr_result.warnings)
-            ocr_text_by_page = {page.page_number: page.text for page in ocr_result.pages if page.text.strip()}
-            if ocr_text_by_page:
-                fragments = [
-                    TextFragment(
-                        text=ocr_text_by_page.get(fragment.page_number, fragment.text),
-                        page_number=fragment.page_number,
-                        section_name=fragment.section_name,
-                    )
-                    for fragment in fragments
-                ]
+            page_list = ", ".join(str(page) for page in low_text_pages[:10])
+            if len(low_text_pages) > 10:
+                page_list += ", ..."
+            if not self.ocr_service.enabled:
+                warnings.append(
+                    f"{file_name}: OCR fallback is not configured for text-poor PDF pages {page_list}. Manual review is required for those pages."
+                )
+            else:
+                ocr_result = self.ocr_service.extract_pdf_pages(payload, low_text_pages[:10])
+                warnings.extend(f"{file_name}: {warning}" for warning in ocr_result.warnings)
+                ocr_text_by_page = {page.page_number: page.text for page in ocr_result.pages if page.text.strip()}
+                if ocr_text_by_page:
+                    fragments = [
+                        TextFragment(
+                            text=ocr_text_by_page.get(fragment.page_number, fragment.text),
+                            page_number=fragment.page_number,
+                            section_name=fragment.section_name,
+                        )
+                        for fragment in fragments
+                    ]
 
         return fragments, tables, warnings
 
@@ -452,6 +473,16 @@ class UploadSubmissionBuilder:
                 f"Virtual document extracted from bundled PDF pages {self._page_span_text(section.start_page, section.end_page)}.",
                 f"Detected section: {section.section_label}.",
             ]
+            sparse_pages = [
+                fragment.page_number
+                for fragment in section.fragments
+                if fragment.page_number is not None and len(re.sub(r"\s+", "", fragment.text or "")) < 40
+            ]
+            if sparse_pages:
+                page_text = ", ".join(str(page) for page in sparse_pages)
+                notes.append(
+                    f"Text extraction is sparse on pages {page_text}; OCR or manual review is required for complete visual verification."
+                )
             if section.document_type == DocumentType.PSW and "ppa" in section.section_label.lower():
                 notes.append(
                     "VDA/PPA cover sheet was treated as PSW-equivalent submission warrant evidence."

@@ -29,3 +29,10 @@ def test_fai_sample_requires_manual_review():
     assert report.manual_review_flags
     assert any(finding.title == "Measured results are missing unit context" for finding in report.technical_findings)
 
+
+def test_measurement_summary_is_populated_for_sample_packages():
+    samples = get_sample_submissions()
+    report = ValidationOrchestrator().validate(samples["fai_conditional_low_confidence"])
+
+    assert report.measurement_summary.total_results > 0
+    assert report.measurement_summary.total_characteristics > 0

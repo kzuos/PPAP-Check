@@ -42,7 +42,7 @@
 
                 <form class="upload-form" method="post" action="/" enctype="multipart/form-data">
                     <h2>Upload Submission</h2>
-                    <p class="picker-detail">Best results come from uploading separate PPAP or FAIR elements. Text-based PDFs, TXT, CSV, TSV, and XLSX files are supported in this release. Scanned image PDFs will be flagged for manual review because OCR is not enabled yet.</p>
+                    <p class="picker-detail">Best results come from uploading separate PPAP or FAIR elements. Text-based PDFs, TXT, CSV, TSV, and XLSX files are supported. Bundled VDA/PPA PDFs are split into virtual evidence sections. Scanned image PDFs still require OCR configuration or manual review.</p>
 
                     <label for="files">Submission files</label>
                     <input id="files" name="files" type="file" multiple required>
@@ -178,6 +178,29 @@
                 {% endif %}
             </section>
 
+            <section class="panel">
+                <h2>Measurement Evidence</h2>
+                {% if report.measurement_summary.total_results %}
+                <dl class="record-grid">
+                    <div><dt>Characteristics</dt><dd>{{ report.measurement_summary.total_characteristics }}</dd></div>
+                    <div><dt>Results</dt><dd>{{ report.measurement_summary.total_results }}</dd></div>
+                    <div><dt>Passed</dt><dd>{{ report.measurement_summary.passed_results }}</dd></div>
+                    <div><dt>Failed</dt><dd>{{ report.measurement_summary.failed_results }}</dd></div>
+                    <div><dt>Unclear</dt><dd>{{ report.measurement_summary.unclear_results }}</dd></div>
+                    <div><dt>Attribute / non-numeric</dt><dd>{{ report.measurement_summary.attribute_results }}</dd></div>
+                </dl>
+                {% if report.measurement_summary.source_documents %}
+                <ul class="inline-list">
+                    {% for item in report.measurement_summary.source_documents %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+                {% else %}
+                <p class="empty-state">No dimensional or FAIR measurement rows were extracted.</p>
+                {% endif %}
+            </section>
+
             <section class="panel full-width">
                 <h2>Nonconformities</h2>
                 {% if report.nonconformities %}
@@ -208,6 +231,29 @@
             </section>
 
             <section class="panel">
+                <h2>Technical Findings</h2>
+                {% if report.technical_findings %}
+                <ul class="issue-list">
+                    {% for item in report.technical_findings %}
+                    <li class="sev-{{ item.severity.value|lower|replace(' ', '-') }}">
+                        <strong>{{ item.title }}</strong><br>
+                        {{ item.description }}
+                        {% if item.evidence %}
+                        <ul class="evidence-list">
+                            {% for evidence in item.evidence %}
+                            <li>{{ evidence.file_name }}{% if evidence.page_number %}, p.{{ evidence.page_number }}{% endif %}{% if evidence.section_name %}, {{ evidence.section_name }}{% endif %}{% if evidence.field_name %}, {{ evidence.field_name }}{% endif %}{% if evidence.snippet %} - {{ evidence.snippet }}{% endif %} ({{ "%.2f"|format(evidence.confidence) }})</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="empty-state">No additional technical validity findings were raised.</p>
+                {% endif %}
+            </section>
+
+            <section class="panel">
                 <h2>Required Documents</h2>
                 <ul class="requirement-list">
                     {% for item in report.required_documents %}
@@ -234,6 +280,13 @@
                         <ul class="meta-list">
                             {% for key, value in item.key_metadata.items() %}
                             <li><span>{{ key }}</span><strong>{{ value }}</strong></li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                        {% if item.structured_counts %}
+                        <ul class="meta-list">
+                            {% for key, value in item.structured_counts.items() %}
+                            <li><span>{{ key|replace('_', ' ') }}</span><strong>{{ value }}</strong></li>
                             {% endfor %}
                         </ul>
                         {% endif %}

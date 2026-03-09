@@ -20,6 +20,7 @@ def test_dashboard_renders():
 
     assert response.status_code == 200
     assert "Submission Readiness Review" in response.text
+    assert "Measurement Evidence" in response.text
     assert "Machine-Readable Output" in response.text
 
 
@@ -74,6 +75,7 @@ def test_validate_upload_endpoint_accepts_text_documents():
     assert body["report"]["metadata_master_record"]["part_number"] == "ABC-123"
     assert body["report"]["missing_documents"] == []
     assert len(body["report"]["document_inventory"]) == 2
+    assert "measurement_summary" in body["report"]
 
 
 def test_upload_dashboard_renders_uploaded_result():

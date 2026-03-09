@@ -433,6 +433,7 @@ class DocumentInventoryItem(BaseModel):
     document_label: str
     classification_confidence: float
     key_metadata: dict[str, str] = Field(default_factory=dict)
+    structured_counts: dict[str, int] = Field(default_factory=dict)
     findings: list[str] = Field(default_factory=list)
 
 
@@ -444,6 +445,17 @@ class MetadataMasterRecord(BaseModel):
     supplier: str = ""
     process: str = ""
     material: str = ""
+
+
+class MeasurementSummary(BaseModel):
+    total_characteristics: int = 0
+    total_results: int = 0
+    passed_results: int = 0
+    failed_results: int = 0
+    unclear_results: int = 0
+    numeric_results: int = 0
+    attribute_results: int = 0
+    source_documents: list[str] = Field(default_factory=list)
 
 
 class CheckResult(BaseModel):
@@ -486,6 +498,7 @@ class ValidationReport(BaseModel):
     required_documents: list[RequirementStatus]
     missing_documents: list[str]
     metadata_master_record: MetadataMasterRecord
+    measurement_summary: MeasurementSummary = Field(default_factory=MeasurementSummary)
     cross_document_conflicts: list[ValidationFinding]
     ppap_checks: list[CheckResult]
     fai_checks: list[CheckResult]

@@ -26,6 +26,9 @@ PPAPcheck is an evidence-based submission validation platform for PPAP, FAI, and
 - A reviewer dashboard that shows inventory, missing documents, severity-coded findings, traceability checks, the expert report, and the raw JSON report.
 - Upload parsing for `PDF`, `TXT`, `CSV`, `TSV`, and `XLSX`, including VDA/PPA-style bundled PDF splitting and table extraction for dimensional and material pages.
 - An optional OCR fallback for text-poor PDF pages when `OPENAI_API_KEY` and `PPAPCHECK_OCR_MODEL` are configured.
+- Measurement-aware extraction for VDA dimensional tables, including characteristic/result capture, tolerance evaluation where supported, and explicit `unclear` outcomes when the syntax cannot be safely interpreted.
+- Material/spec promotion from material pages into structured certificate records and master-record metadata.
+- Package-level measurement summaries and manual-review escalation when a substantial share of extracted measurements still requires human engineering review.
 - Sample evidence sets that exercise `BLOCK_SUBMISSION`, `PASS_WITH_OBSERVATIONS`, and `CONDITIONAL`.
 
 ## Architecture
@@ -40,7 +43,7 @@ The current implementation is framework-light but production-oriented. The valid
 - `standards_rule_engine`: enforces required document presence and mandatory-field completeness.
 - `cross_document_validator`: resolves a metadata master record and flags part, drawing, revision, supplier, customer, process, and material conflicts.
 - `traceability_engine`: checks drawing-to-results coverage, process-flow linkage, and special-characteristic control coverage.
-- `technical_quality_validator`: flags missing capability evidence, absent MSA support, incomplete measurement context, and PFMEA-to-Control Plan disconnects.
+- `technical_quality_validator`: flags missing capability evidence, absent MSA support, incomplete measurement context, high unclear-measurement ratios, material traceability gaps, and PFMEA-to-Control Plan disconnects.
 - `scoring_engine`: converts findings into decision and confidence.
 - `report_generator`: builds the expert narrative and recommended actions.
 - `audit_log_service`: records the validation stages for traceability.
@@ -103,7 +106,8 @@ set PPAPCHECK_OCR_MODEL=your_openai_vision_model
 ## Next production steps
 
 - Add persistent storage for submissions, uploaded documents, extracted fields, validation reports, traceability links, review comments, and billing events.
-- Add OCR and document parsing adapters behind the extraction contract.
+- Expand OCR and document parsing adapters behind the extraction contract.
+- Add drawing vision for balloon extraction, GD&T interpretation, and drawing-to-results configuration traceability.
 - Add customer-template management and rule packs.
 - Add background processing, review assignment, and reviewer comments.
 - Add authentication, audit retention, and tenant isolation.

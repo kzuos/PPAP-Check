@@ -64,6 +64,7 @@ class ValidationOrchestrator:
         )
 
         technical_findings = self.technical_quality_validator.evaluate(package, mode)
+        measurement_summary = self.technical_quality_validator.summarize_measurements(package)
         self.audit_log.record(
             package.submission_id,
             "technical_quality",
@@ -92,6 +93,7 @@ class ValidationOrchestrator:
                 if requirement.status.value == "missing"
             ],
             metadata_master_record=metadata_master_record,
+            measurement_summary=measurement_summary,
             cross_document_conflicts=conflicts,
             ppap_checks=standards.ppap_checks,
             fai_checks=standards.fai_checks,

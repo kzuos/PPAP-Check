@@ -46,6 +46,52 @@ class TraceabilityEngine:
         ]
 
         if not drawing_characteristics:
+            if inspection_results:
+                evidence = [result.evidence[0] for result in inspection_results if result.evidence][:6]
+                identifiers: list[str] = []
+                for result in inspection_results:
+                    identifier = result.balloon_number or result.characteristic_id or result.source_document
+                    if identifier in identifiers:
+                        continue
+                    identifiers.append(identifier)
+                    if len(identifiers) >= 12:
+                        break
+                severity = Severity.CRITICAL if mode in {SubmissionMode.FAI, SubmissionMode.HYBRID} else Severity.MAJOR
+                findings.append(
+                    ValidationFinding(
+                        finding_id="trace-results-without-drawing",
+                        category="traceability",
+                        severity=severity,
+                        title="Measured features cannot be traced to a released drawing",
+                        description=(
+                            "Inspection results were extracted, but no released drawing or ballooned drawing characteristics were available "
+                            "to confirm characteristic identity and configuration control. "
+                            f"Measured items without verified drawing linkage include: {', '.join(identifiers)}."
+                        ),
+                        blocking=severity == Severity.CRITICAL,
+                        evidence=evidence,
+                        related_documents=[
+                            DocumentType.DESIGN_RECORD,
+                            DocumentType.BALLOONED_DRAWING,
+                            DocumentType.DIMENSIONAL_RESULTS,
+                            DocumentType.FAIR,
+                        ],
+                        related_characteristics=identifiers,
+                        suggested_action="Provide the released drawing or ballooned drawing and align the measured rows to approved characteristic identifiers.",
+                    )
+                )
+                return [
+                    CheckResult(
+                        check_id="trace-drawing-missing",
+                        name="Drawing to results traceability",
+                        status=CheckStatus.FAIL,
+                        severity=severity,
+                        description="Measured results exist, but no released drawing evidence was available to verify characteristic traceability.",
+                        evidence=evidence,
+                        confidence=0.9,
+                        suggested_action="Attach the released drawing or ballooned drawing used to create the dimensional or FAIR results.",
+                    )
+                ]
             return [
                 CheckResult(
                     check_id="trace-drawing-missing",
