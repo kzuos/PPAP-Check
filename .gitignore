@@ -7,3 +7,4 @@ venv/
 *.pyd
 *.log
 .DS_Store
+output/
